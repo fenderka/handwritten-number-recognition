@@ -1,17 +1,21 @@
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, colorchooser
 from tkinter.ttk import Button, Label, Progressbar
 from PIL import Image, ImageGrab
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Input
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Input, Dropout, BatchNormalization
 from tensorflow.keras.utils import to_categorical
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, LearningRateScheduler
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from sklearn.model_selection import train_test_split
 import os
 import threading
 import logging
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
 
 # ------------------------------
 # Настройка логирования
@@ -24,14 +28,20 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 IMAGE_SIZE = 28
 NUM_CLASSES = 10
 DATA_DIR = 'data'
-MODEL_FILE = 'digit_recognizer.keras'  # Используем .keras формат
-BEST_MODEL_FILE = 'best_model.keras' # Для checkpoint
+MODEL_FILE = 'digit_recognizer.keras'
+BEST_MODEL_FILE = 'best_model.keras'
 LEARNING_RATE = 0.001
-EPOCHS = 20  # Сократил для демонстрации. Можно вернуть к 100.
+EPOCHS = 50
 BATCH_SIZE = 64
 VALIDATION_SPLIT = 0.2
-EARLY_STOPPING_PATIENCE = 5
+EARLY_STOPPING_PATIENCE = 10
 RANDOM_STATE = 42
+ROTATION_RANGE = 15
+ZOOM_RANGE = 0.1
+WIDTH_SHIFT_RANGE = 0.1
+HEIGHT_SHIFT_RANGE = 0.1
+INITIAL_LINE_WIDTH = 10
+DEFAULT_COLOR = "black"
 
 # ------------------------------
 # Функции для работы с данными
@@ -91,7 +101,6 @@ def load_data():
         messagebox.showerror("Ошибка загрузки данных", f"Не удалось загрузить данные: {e}")
         return np.array([]), np.array([])  # Возвращаем пустые массивы, чтобы не сломать обучение
 
-
 # ------------------------------
 # Функции для создания и обучения модели
 # ------------------------------
@@ -100,13 +109,32 @@ def create_model():
     """Создает сверточную нейронную сеть."""
     try:
         model = Sequential([
-            Input(shape=(IMAGE_SIZE, IMAGE_SIZE, 1)),  # Добавляем Input слой
-            Conv2D(32, (3, 3), activation='relu'),
+            Input(shape=(IMAGE_SIZE, IMAGE_SIZE, 1)),
+            Conv2D(32, (3, 3), activation='relu', padding='same'),
+            BatchNormalization(),
+            Conv2D(32, (3, 3), activation='relu', padding='same'),
+            BatchNormalization(),
             MaxPooling2D((2, 2)),
-            Conv2D(64, (3, 3), activation='relu'),
+            Dropout(0.25),
+
+            Conv2D(64, (3, 3), activation='relu', padding='same'),
+            BatchNormalization(),
+            Conv2D(64, (3, 3), activation='relu', padding='same'),
+            BatchNormalization(),
             MaxPooling2D((2, 2)),
+            Dropout(0.25),
+
+            Conv2D(128, (3, 3), activation='relu', padding='same'),
+            BatchNormalization(),
+            Conv2D(128, (3, 3), activation='relu', padding='same'),
+            BatchNormalization(),
+            MaxPooling2D((2, 2)),
+            Dropout(0.25),
+
             Flatten(),
-            Dense(128, activation='relu'),
+            Dense(256, activation='relu'),
+            BatchNormalization(),
+            Dropout(0.5),
             Dense(NUM_CLASSES, activation='softmax')
         ])
         logging.info("Модель успешно создана.")
@@ -116,8 +144,14 @@ def create_model():
         messagebox.showerror("Ошибка", f"Не удалось создать модель: {e}")
         return None
 
+def learning_rate_scheduler(epoch):
+    """Уменьшает learning rate каждые 10 эпох."""
+    if epoch % 10 == 0 and epoch > 0:
+        return LEARNING_RATE * 0.5
+    return LEARNING_RATE
 
-def train_model(model, images, labels, progress_callback=None):
+
+def train_model(model, images, labels, progress_callback=None, history_callback=None):
     """Обучает модель на предоставленных данных."""
     try:
         labels = to_categorical(labels, num_classes=NUM_CLASSES)
@@ -126,9 +160,19 @@ def train_model(model, images, labels, progress_callback=None):
         x_train = np.expand_dims(x_train, axis=-1)
         x_val = np.expand_dims(x_val, axis=-1)
 
-        # Добавление EarlyStopping и ModelCheckpoint
+        # Аугментация данных
+        datagen = ImageDataGenerator(
+            rotation_range=ROTATION_RANGE,
+            zoom_range=ZOOM_RANGE,
+            width_shift_range=WIDTH_SHIFT_RANGE,
+            height_shift_range=HEIGHT_SHIFT_RANGE)
+
+        datagen.fit(x_train)
+
+        # Колбэки
         early_stopping = EarlyStopping(monitor='val_loss', patience=EARLY_STOPPING_PATIENCE, restore_best_weights=True)
-        checkpoint = ModelCheckpoint(BEST_MODEL_FILE, save_best_only=True, monitor='val_loss', verbose=0) # verbose=0 чтобы не спамить в консоль
+        checkpoint = ModelCheckpoint(BEST_MODEL_FILE, save_best_only=True, monitor='val_loss', verbose=0)
+        lr_scheduler = LearningRateScheduler(learning_rate_scheduler)
 
         model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE),
                       loss='categorical_crossentropy', metrics=['accuracy'])
@@ -136,13 +180,11 @@ def train_model(model, images, labels, progress_callback=None):
         logging.info("Начинаем обучение модели...")
 
         history = model.fit(
-            x_train, y_train,
+            datagen.flow(x_train, y_train, batch_size=BATCH_SIZE),
             epochs=EPOCHS,
-            batch_size=BATCH_SIZE,
             validation_data=(x_val, y_val),
-            callbacks=[early_stopping, checkpoint],
-            verbose=0  # Отключаем вывод в консоль, чтобы прогресс-бар работал корректно
-        )
+            callbacks=[early_stopping, checkpoint, lr_scheduler],
+            verbose=0)
 
         logging.info("Обучение модели завершено.")
 
@@ -150,7 +192,9 @@ def train_model(model, images, labels, progress_callback=None):
             progress_callback(100)  # Завершаем прогресс-бар
 
         save_model(model)
+
         return history
+
     except Exception as e:
         logging.error(f"Ошибка при обучении модели: {e}")
         messagebox.showerror("Ошибка", f"Не удалось обучить модель: {e}")
@@ -194,11 +238,15 @@ class DigitRecognizerApp:
     def __init__(self, master):
         self.master = master
         master.title("Распознавание рукописных цифр")
-        master.geometry("450x550")  # Увеличил высоту окна
+        master.geometry("650x700")  # Увеличил размер окна
 
-        self.model = load_model()  # Загружаем модель при старте
+        self.model = load_model()
         if self.model is None:
-            self.model = create_model() # Если загрузка не удалась, создаем новую модель
+            self.model = create_model()
+
+        # Параметры рисования
+        self.line_width = INITIAL_LINE_WIDTH
+        self.paint_color = DEFAULT_COLOR
 
         # Создание холста для рисования
         self.canvas_width = 250
@@ -212,58 +260,68 @@ class DigitRecognizerApp:
         self.label.pack(pady=5)
 
         # Кнопки управления
-        self.clear_button = Button(master, text="Очистить", command=self.clear_canvas, width=18)
-        self.clear_button.pack(side=tk.LEFT, padx=10)
+        self.clear_button = Button(master, text="Очистить", command=self.clear_canvas, width=15)
+        self.clear_button.pack(side=tk.LEFT, padx=5)
 
-        self.predict_button = Button(master, text="Распознать", command=self.predict_digit, width=18)  # Убрал async
-        self.predict_button.pack(side=tk.LEFT, padx=10)
+        self.predict_button = Button(master, text="Распознать", command=self.predict_digit, width=15)
+        self.predict_button.pack(side=tk.LEFT, padx=5)
 
         self.save_button = Button(master, text="Сохранить для обучения", command=self.save_for_training, width=20)
-        self.save_button.pack(side=tk.LEFT, padx=10)
+        self.save_button.pack(side=tk.LEFT, padx=5)
 
-        self.train_button = Button(master, text="Обучить модель", command=self.start_training_thread, width=20) # Запускаем обучение в потоке
-        self.train_button.pack(side=tk.LEFT, padx=10)
+        self.train_button = Button(master, text="Обучить модель", command=self.start_training_thread, width=20)
+        self.train_button.pack(side=tk.LEFT, padx=5)
+
+        # Настройки рисования
+        self.width_label = Label(master, text="Толщина линии:", font=("Helvetica", 10))
+        self.width_label.pack()
+
+        self.width_scale = tk.Scale(master, from_=1, to=30, orient=tk.HORIZONTAL, command=self.change_width, length=150)
+        self.width_scale.set(self.line_width)
+        self.width_scale.pack()
+
+        self.color_button = Button(master, text="Выбрать цвет", command=self.choose_color, width=15)
+        self.color_button.pack(pady=5)
 
         # Ввод цифры для сохранения
         self.digit_var = tk.StringVar(value="0")
         self.digit_entry = tk.Entry(master, textvariable=self.digit_var, width=5, font=("Helvetica", 14))
-        self.digit_entry.pack(pady=10)
+        self.digit_entry.pack(pady=5)
 
         # Метка для предсказания
         self.prediction_label = Label(master, text="Предсказание: ", font=("Helvetica", 14))
-        self.prediction_label.pack(pady=10)
+        self.prediction_label.pack(pady=5)
 
         # Прогресс-бар для обучения
         self.progress = Progressbar(master, length=200, mode="determinate", maximum=100)
-        self.progress.pack(pady=10)
+        self.progress.pack(pady=5)
+
+        # Область для графика обучения
+        self.fig = Figure(figsize=(5, 4), dpi=100)
+        self.plot = self.fig.add_subplot(111)
+        self.canvas_widget = FigureCanvasTkAgg(self.fig, master=master)
+        self.canvas_widget.get_tk_widget().pack(pady=5)
 
         # Настройка холста для рисования
         self.canvas.bind("<B1-Motion>", self.paint)
         self.last_x = None
         self.last_y = None
-
-        self.is_training = False # Флаг, чтобы избежать одновременного обучения
+        self.is_training = False
 
     def paint(self, event):
         """Рисует на холсте."""
-        try:
-            if self.last_x and self.last_y:
-                self.canvas.create_line(self.last_x, self.last_y, event.x, event.y,
-                                        width=10, fill="black", capstyle=tk.ROUND, smooth=tk.TRUE)
-            self.last_x = event.x
-            self.last_y = event.y
-        except Exception as e:
-            logging.error(f"Ошибка при рисовании: {e}")
+        if self.last_x and self.last_y:
+            self.canvas.create_line(self.last_x, self.last_y, event.x, event.y,
+                                    width=self.line_width, fill=self.paint_color, capstyle=tk.ROUND, smooth=tk.TRUE)
+        self.last_x = event.x
+        self.last_y = event.y
 
     def clear_canvas(self):
         """Очищает холст для рисования."""
-        try:
-            self.canvas.delete("all")
-            self.last_x = None
-            self.last_y = None
-            self.prediction_label.config(text="Предсказание: ")
-        except Exception as e:
-            logging.error(f"Ошибка при очистке холста: {e}")
+        self.canvas.delete("all")
+        self.last_x = None
+        self.last_y = None
+        self.prediction_label.config(text="Предсказание: ")
 
     def predict_digit(self):
         """Распознает цифру, нарисованную на холсте."""
@@ -287,7 +345,7 @@ class DigitRecognizerApp:
             img_array = np.expand_dims(img_array, axis=0)
             img_array = np.expand_dims(img_array, axis=-1)
 
-            prediction = self.model.predict(img_array, verbose=0) # verbose=0 чтобы не спамить в консоль
+            prediction = self.model.predict(img_array, verbose=0)
             digit = np.argmax(prediction)
 
             self.prediction_label.config(text=f"Предсказание: {digit}")
@@ -328,6 +386,7 @@ class DigitRecognizerApp:
             return
 
         self.is_training = True
+        self.clear_plot()  # Очистить график перед новым обучением
         threading.Thread(target=self.train_model_thread, daemon=True).start()
 
     def train_model_thread(self):
@@ -341,17 +400,22 @@ class DigitRecognizerApp:
             # Блокируем кнопку "Обучить модель"
             self.train_button.config(state="disabled")
 
-            # Функция для обновления прогресс-бара (нужно вызывать через `after`)
+            # Функция для обновления прогресс-бара
             def update_progress_bar(progress):
                 self.progress["value"] = progress
-                self.master.update_idletasks()  # Обновляем UI
+                self.master.update_idletasks()
 
-            # Callback, который вызывает обновление прогресс-бара
+            # Callback для обновления прогресс-бара
             def progress_callback(progress):
-                self.master.after(0, update_progress_bar, progress)  # Вызываем в главном потоке
+                self.master.after(0, update_progress_bar, progress)
 
-            # Запускаем обучение
-            train_model(self.model, images, labels, progress_callback=progress_callback)
+            def history_callback(history):
+                 self.master.after(0, self.update_plot, history)
+
+            history = train_model(self.model, images, labels, progress_callback=progress_callback)
+
+            if history:
+                history_callback(history.history)
 
             # Выводим сообщение об успехе
             messagebox.showinfo("Успех", "Модель обучена и сохранена.")
@@ -363,9 +427,34 @@ class DigitRecognizerApp:
             # Разблокируем кнопку "Обучить модель" и сбрасываем флаг
             self.train_button.config(state="normal")
             self.is_training = False
-            self.master.after(0, self.progress.stop) # Останавливаем прогрессбар
-            self.master.after(0, self.progress.config, {"value": 0})  # Сбрасываем значение прогрессбара
+            self.master.after(0, self.progress.stop)
+            self.master.after(0, self.progress.config, {"value": 0})
 
+    def change_width(self, value):
+        """Изменяет толщину линии рисования."""
+        self.line_width = int(value)
+
+    def choose_color(self):
+        """Выбирает цвет линии рисования."""
+        color_code = colorchooser.askcolor(title="Выберите цвет")
+        if color_code:
+            self.paint_color = color_code[1]
+
+    def update_plot(self, history):
+        """Обновляет график обучения."""
+        self.plot.clear()
+        self.plot.plot(history['accuracy'])
+        self.plot.plot(history['val_accuracy'])
+        self.plot.set_title('Точность модели')
+        self.plot.set_ylabel('Точность')
+        self.plot.set_xlabel('Эпоха')
+        self.plot.legend(['Обучение', 'Валидация'], loc='upper left')
+        self.canvas_widget.draw()
+
+    def clear_plot(self):
+         """Очищает график обучения"""
+         self.plot.clear()
+         self.canvas_widget.draw()
 
 # ------------------------------
 # Запуск приложения
