@@ -1,7 +1,6 @@
-
 import tkinter as tk
-from tkinter import messagebox, ttk, filedialog
-from tkinter.ttk import Button, Label, Progressbar, Frame, LabelFrame
+from tkinter import messagebox, filedialog, Canvas, StringVar, Entry
+from tkinter.ttk import Button, Label, Progressbar, Frame, LabelFrame, Style
 from PIL import Image, ImageTk, ImageGrab
 import numpy as np
 import tensorflow as tf
@@ -11,7 +10,6 @@ from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 import os
 import threading
-from ttkthemes import ThemedTk
 import time
 
 # Отключение аппаратного ускорения (если необходимо)
@@ -151,7 +149,7 @@ class DigitRecognizerApp:
         self.master = master
         master.title("Распознавание рукописных цифр")
 
-        style = ttk.Style()
+        style = Style()
         style.theme_use('clam')  # clam - более легкая тема
 
         self.model = load_model()
@@ -176,8 +174,8 @@ class DigitRecognizerApp:
         # --- Canvas ---
         self.canvas_width = 300
         self.canvas_height = 300
-        self.canvas = tk.Canvas(canvas_frame, width=self.canvas_width, height=self.canvas_height, bg="white", bd=2,
-                                relief="solid")
+        self.canvas = Canvas(canvas_frame, width=self.canvas_width, height=self.canvas_height, bg="white", bd=2,
+                             relief="solid")
         self.canvas.pack()
 
         # --- Prediction Labels ---
@@ -198,15 +196,16 @@ class DigitRecognizerApp:
         self.save_png_button.pack(side=tk.LEFT, padx=5)
 
         # --- Training Widgets ---
-        self.digit_var = tk.StringVar(value="0")
-        self.digit_entry = tk.Entry(training_frame, textvariable=self.digit_var, width=5, font=("Helvetica", 14))
+        self.digit_var = StringVar(value="0")
+        self.digit_entry = Entry(training_frame, textvariable=self.digit_var, width=5, font=("Helvetica", 14))
         self.digit_entry.pack(side=tk.LEFT, padx=5)
         self.digit_entry.insert(0, '0')
 
-        self.save_button = Button(training_frame, text="Сохранить для обучения", command=self.save_for_training, width=20)
+        self.save_button = Button(training_frame, text="Сохранить для обучения", command=self.save_for_training,
+                                  width=20)
         self.save_button.pack(side=tk.LEFT, padx=5)
 
-        self.train_button = Button(training_frame, text="Обучить модель", command=self.train_model, width=20)
+        self.train_button = Button(training_frame, text="Обучить модель", command=self.train_model_thread, width=20)
         self.train_button.pack(pady=10, padx=5)
 
         self.progress = Progressbar(master, length=200, mode="indeterminate")
@@ -273,6 +272,9 @@ class DigitRecognizerApp:
 
         self.update_gui_after("Предсказание", f"Предсказание: {digit}, Уверенность: {confidence:.2f}%")
 
+    def update_label(self, label, text):
+        self.master.after(0, lambda: label.config(text=text))
+
     def update_gui_after(self, title, message):
         self.master.after(0, lambda: self.update_gui(title, message))
 
@@ -280,8 +282,8 @@ class DigitRecognizerApp:
         if title == "Ошибка":
             messagebox.showerror(title, message)
         elif title == "Предсказание":
-            self.prediction_label.config(text=message.split(',')[0])
-            self.confidence_label.config(text=message.split(',')[1])
+            self.update_label(self.prediction_label, message.split(',')[0])
+            self.update_label(self.confidence_label, message.split(',')[1])
 
     def save_for_training(self):
         digit = self.digit_var.get()
@@ -304,13 +306,16 @@ class DigitRecognizerApp:
 
         messagebox.showinfo("Сохранено", "Изображение сохранено для обучения.")
 
+    def train_model_thread(self):
+        self.progress.start()
+        threading.Thread(target=self.train_model).start()
+
     def train_model(self):
         images, labels = load_data()
         if len(images) == 0:
             messagebox.showerror("Ошибка", "Нет данных для обучения. Сначала соберите данные.")
             return
 
-        self.progress.start()
         self.model = create_model()
 
         def update_progress_bar(progress):
@@ -342,7 +347,6 @@ class DigitRecognizerApp:
 # ------------------------------
 
 if __name__ == '__main__':
-    root = ThemedTk(theme="clam")  # clam тема
-    # update_gui(root) #Закомментировано, так как может негативно сказаться на работе.
+    root = tk.Tk()
     app = DigitRecognizerApp(root)
     root.mainloop()
