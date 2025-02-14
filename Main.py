@@ -1,28 +1,37 @@
 import tkinter as tk
-from tkinter import messagebox, filedialog
+from tkinter import messagebox
 from tkinter.ttk import Button, Label, Progressbar
-from PIL import Image, ImageDraw, ImageGrab
+from PIL import Image, ImageGrab
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Input
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+from sklearn.model_selection import train_test_split
 import os
 import threading
-import asyncio
+import logging
 
 # ------------------------------
-# Параметры
+# Настройка логирования
+# ------------------------------
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# ------------------------------
+# Параметры (Константы)
 # ------------------------------
 IMAGE_SIZE = 28
 NUM_CLASSES = 10
 DATA_DIR = 'data'
-MODEL_FILE = 'digit_recognizer.h5'
+MODEL_FILE = 'digit_recognizer.keras'  # Используем .keras формат
+BEST_MODEL_FILE = 'best_model.keras' # Для checkpoint
 LEARNING_RATE = 0.001
-EPOCHS = 100
+EPOCHS = 20  # Сократил для демонстрации. Можно вернуть к 100.
 BATCH_SIZE = 64
-
+VALIDATION_SPLIT = 0.2
+EARLY_STOPPING_PATIENCE = 5
+RANDOM_STATE = 42
 
 # ------------------------------
 # Функции для работы с данными
@@ -30,50 +39,57 @@ BATCH_SIZE = 64
 
 def create_data_directory():
     """Создает директорию для сохранения данных, если она не существует."""
-    if not os.path.exists(DATA_DIR):
-        os.makedirs(DATA_DIR)
-        for i in range(NUM_CLASSES):
-            os.makedirs(os.path.join(DATA_DIR, str(i)))
+    try:
+        if not os.path.exists(DATA_DIR):
+            os.makedirs(DATA_DIR)
+            for i in range(NUM_CLASSES):
+                os.makedirs(os.path.join(DATA_DIR, str(i)))
+        logging.info(f"Директория данных '{DATA_DIR}' успешно создана/проверена.")
+    except OSError as e:
+        logging.error(f"Ошибка при создании директории данных: {e}")
+        raise
 
 
 def save_drawing(image, label):
     """Сохраняет изображение в указанную папку."""
-    create_data_directory()
-    count = len(os.listdir(os.path.join(DATA_DIR, str(label))))
-    filename = os.path.join(DATA_DIR, str(label), f"{count}.png")
-    image.save(filename)
-    print(f"Изображение сохранено как {filename}")
-
-
-def save_data_npz(images, labels):
-    """Сохранение данных в формат .npz"""
-    np.savez_compressed('digit_data.npz', images=images, labels=labels)
-
-
-def load_data_npz():
-    """Загрузка данных из файла .npz"""
-    data = np.load('digit_data.npz')
-    return data['images'], data['labels']
+    try:
+        create_data_directory()
+        count = len(os.listdir(os.path.join(DATA_DIR, str(label))))
+        filename = os.path.join(DATA_DIR, str(label), f"{count}.png")
+        image.save(filename)
+        logging.info(f"Изображение сохранено как {filename}")
+    except Exception as e:
+        logging.error(f"Ошибка при сохранении изображения: {e}")
+        messagebox.showerror("Ошибка сохранения", f"Не удалось сохранить изображение: {e}")
 
 
 def load_data():
     """Загружает данные из директории и подготавливает их для обучения."""
     images = []
     labels = []
-    for i in range(NUM_CLASSES):
-        digit_dir = os.path.join(DATA_DIR, str(i))
-        for filename in os.listdir(digit_dir):
-            if filename.endswith(".png"):
-                img_path = os.path.join(digit_dir, filename)
-                img = Image.open(img_path).convert('L')
-                img = img.resize((IMAGE_SIZE, IMAGE_SIZE))
-                img_array = np.array(img) / 255.0
-                images.append(img_array)
-                labels.append(i)
+    try:
+        for i in range(NUM_CLASSES):
+            digit_dir = os.path.join(DATA_DIR, str(i))
+            for filename in os.listdir(digit_dir):
+                if filename.endswith(".png"):
+                    img_path = os.path.join(digit_dir, filename)
+                    try:
+                        img = Image.open(img_path).convert('L')
+                        img = img.resize((IMAGE_SIZE, IMAGE_SIZE))
+                        img_array = np.array(img) / 255.0
+                        images.append(img_array)
+                        labels.append(i)
+                    except Exception as e:
+                        logging.warning(f"Не удалось загрузить изображение {img_path}: {e}")
 
-    images = np.array(images)
-    labels = np.array(labels)
-    return images, labels
+        images = np.array(images)
+        labels = np.array(labels)
+        logging.info(f"Загружено {len(images)} изображений из директории {DATA_DIR}")
+        return images, labels
+    except Exception as e:
+        logging.error(f"Ошибка при загрузке данных: {e}")
+        messagebox.showerror("Ошибка загрузки данных", f"Не удалось загрузить данные: {e}")
+        return np.array([]), np.array([])  # Возвращаем пустые массивы, чтобы не сломать обучение
 
 
 # ------------------------------
@@ -82,56 +98,89 @@ def load_data():
 
 def create_model():
     """Создает сверточную нейронную сеть."""
-    model = Sequential([
-        Conv2D(32, (3, 3), activation='relu', input_shape=(IMAGE_SIZE, IMAGE_SIZE, 1)),
-        MaxPooling2D((2, 2)),
-        Conv2D(64, (3, 3), activation='relu'),
-        MaxPooling2D((2, 2)),
-        Flatten(),
-        Dense(128, activation='relu'),
-        Dense(NUM_CLASSES, activation='softmax')
-    ])
-    return model
+    try:
+        model = Sequential([
+            Input(shape=(IMAGE_SIZE, IMAGE_SIZE, 1)),  # Добавляем Input слой
+            Conv2D(32, (3, 3), activation='relu'),
+            MaxPooling2D((2, 2)),
+            Conv2D(64, (3, 3), activation='relu'),
+            MaxPooling2D((2, 2)),
+            Flatten(),
+            Dense(128, activation='relu'),
+            Dense(NUM_CLASSES, activation='softmax')
+        ])
+        logging.info("Модель успешно создана.")
+        return model
+    except Exception as e:
+        logging.error(f"Ошибка при создании модели: {e}")
+        messagebox.showerror("Ошибка", f"Не удалось создать модель: {e}")
+        return None
 
 
 def train_model(model, images, labels, progress_callback=None):
     """Обучает модель на предоставленных данных."""
-    labels = to_categorical(labels, num_classes=NUM_CLASSES)
-    from sklearn.model_selection import train_test_split
-    x_train, x_val, y_train, y_val = train_test_split(images, labels, test_size=0.2, random_state=42)
-    x_train = np.expand_dims(x_train, axis=-1)
-    x_val = np.expand_dims(x_val, axis=-1)
+    try:
+        labels = to_categorical(labels, num_classes=NUM_CLASSES)
 
-    # Добавление EarlyStopping и ModelCheckpoint
-    early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-    checkpoint = ModelCheckpoint('best_model.h5', save_best_only=True, monitor='val_loss')
+        x_train, x_val, y_train, y_val = train_test_split(images, labels, test_size=VALIDATION_SPLIT, random_state=RANDOM_STATE)
+        x_train = np.expand_dims(x_train, axis=-1)
+        x_val = np.expand_dims(x_val, axis=-1)
 
-    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE),
-                  loss='categorical_crossentropy', metrics=['accuracy'])
-    history = model.fit(x_train, y_train, epochs=EPOCHS, batch_size=BATCH_SIZE, validation_data=(x_val, y_val),
-                        callbacks=[early_stopping, checkpoint])
+        # Добавление EarlyStopping и ModelCheckpoint
+        early_stopping = EarlyStopping(monitor='val_loss', patience=EARLY_STOPPING_PATIENCE, restore_best_weights=True)
+        checkpoint = ModelCheckpoint(BEST_MODEL_FILE, save_best_only=True, monitor='val_loss', verbose=0) # verbose=0 чтобы не спамить в консоль
 
-    if progress_callback:
-        progress_callback(100)  # Завершаем прогресс-бар
+        model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE),
+                      loss='categorical_crossentropy', metrics=['accuracy'])
 
-    save_model(model)
-    return history
+        logging.info("Начинаем обучение модели...")
+
+        history = model.fit(
+            x_train, y_train,
+            epochs=EPOCHS,
+            batch_size=BATCH_SIZE,
+            validation_data=(x_val, y_val),
+            callbacks=[early_stopping, checkpoint],
+            verbose=0  # Отключаем вывод в консоль, чтобы прогресс-бар работал корректно
+        )
+
+        logging.info("Обучение модели завершено.")
+
+        if progress_callback:
+            progress_callback(100)  # Завершаем прогресс-бар
+
+        save_model(model)
+        return history
+    except Exception as e:
+        logging.error(f"Ошибка при обучении модели: {e}")
+        messagebox.showerror("Ошибка", f"Не удалось обучить модель: {e}")
+        return None
 
 
 def save_model(model, filename=MODEL_FILE):
     """Сохраняет обученную модель."""
-    model.save(filename)
-    print(f"Модель сохранена в {filename}")
+    try:
+        model.save(filename)
+        logging.info(f"Модель сохранена в {filename}")
+        messagebox.showinfo("Сохранение модели", f"Модель успешно сохранена в {filename}")
+    except Exception as e:
+        logging.error(f"Ошибка при сохранении модели: {e}")
+        messagebox.showerror("Ошибка", f"Не удалось сохранить модель: {e}")
 
 
 def load_model(filename=MODEL_FILE):
     """Загружает обученную модель."""
     try:
         model = tf.keras.models.load_model(filename)
-        print(f"Модель загружена из {filename}")
+        logging.info(f"Модель загружена из {filename}")
         return model
     except OSError:
-        print("Файл модели не найден. Пожалуйста, обучите модель сначала.")
+        logging.warning("Файл модели не найден. Пожалуйста, обучите модель сначала.")
+        messagebox.showinfo("Внимание", "Файл модели не найден.  Модель будет создана заново.")
+        return None
+    except Exception as e:
+        logging.error(f"Ошибка при загрузке модели: {e}")
+        messagebox.showerror("Ошибка", f"Не удалось загрузить модель: {e}")
         return None
 
 
@@ -145,9 +194,11 @@ class DigitRecognizerApp:
     def __init__(self, master):
         self.master = master
         master.title("Распознавание рукописных цифр")
-        master.geometry("450x500")
+        master.geometry("450x550")  # Увеличил высоту окна
 
         self.model = load_model()  # Загружаем модель при старте
+        if self.model is None:
+            self.model = create_model() # Если загрузка не удалась, создаем новую модель
 
         # Создание холста для рисования
         self.canvas_width = 250
@@ -164,13 +215,13 @@ class DigitRecognizerApp:
         self.clear_button = Button(master, text="Очистить", command=self.clear_canvas, width=18)
         self.clear_button.pack(side=tk.LEFT, padx=10)
 
-        self.predict_button = Button(master, text="Распознать", command=self.async_predict, width=18)
+        self.predict_button = Button(master, text="Распознать", command=self.predict_digit, width=18)  # Убрал async
         self.predict_button.pack(side=tk.LEFT, padx=10)
 
         self.save_button = Button(master, text="Сохранить для обучения", command=self.save_for_training, width=20)
         self.save_button.pack(side=tk.LEFT, padx=10)
 
-        self.train_button = Button(master, text="Обучить модель", command=self.train_model, width=20)
+        self.train_button = Button(master, text="Обучить модель", command=self.start_training_thread, width=20) # Запускаем обучение в потоке
         self.train_button.pack(side=tk.LEFT, padx=10)
 
         # Ввод цифры для сохранения
@@ -183,7 +234,7 @@ class DigitRecognizerApp:
         self.prediction_label.pack(pady=10)
 
         # Прогресс-бар для обучения
-        self.progress = Progressbar(master, length=200, mode="indeterminate")
+        self.progress = Progressbar(master, length=200, mode="determinate", maximum=100)
         self.progress.pack(pady=10)
 
         # Настройка холста для рисования
@@ -191,29 +242,30 @@ class DigitRecognizerApp:
         self.last_x = None
         self.last_y = None
 
+        self.is_training = False # Флаг, чтобы избежать одновременного обучения
+
     def paint(self, event):
         """Рисует на холсте."""
-        if self.last_x and self.last_y:
-            self.canvas.create_line(self.last_x, self.last_y, event.x, event.y,
-                                    width=10, fill="black", capstyle=tk.ROUND, smooth=tk.TRUE)
-        self.last_x = event.x
-        self.last_y = event.y
+        try:
+            if self.last_x and self.last_y:
+                self.canvas.create_line(self.last_x, self.last_y, event.x, event.y,
+                                        width=10, fill="black", capstyle=tk.ROUND, smooth=tk.TRUE)
+            self.last_x = event.x
+            self.last_y = event.y
+        except Exception as e:
+            logging.error(f"Ошибка при рисовании: {e}")
 
     def clear_canvas(self):
         """Очищает холст для рисования."""
-        self.canvas.delete("all")
-        self.last_x = None
-        self.last_y = None
-        self.prediction_label.config(text="Предсказание: ")
+        try:
+            self.canvas.delete("all")
+            self.last_x = None
+            self.last_y = None
+            self.prediction_label.config(text="Предсказание: ")
+        except Exception as e:
+            logging.error(f"Ошибка при очистке холста: {e}")
 
-    def async_predict(self):
-        """Асинхронное предсказание с обновлением UI."""
-        async def run_prediction():
-            await self.predict_digit()
-
-        asyncio.run(run_prediction())
-
-    async def predict_digit(self):
+    def predict_digit(self):
         """Распознает цифру, нарисованную на холсте."""
         if self.model is None:
             messagebox.showerror("Ошибка", "Модель не загружена. Пожалуйста, обучите модель сначала.")
@@ -223,21 +275,26 @@ class DigitRecognizerApp:
             messagebox.showerror("Ошибка", "Пожалуйста, нарисуйте цифру перед распознаванием.")
             return
 
-        x = self.master.winfo_rootx() + self.canvas.winfo_x()
-        y = self.master.winfo_rooty() + self.canvas.winfo_y()
-        x1 = x + self.canvas_width
-        y1 = y + self.canvas_height
-        img = ImageGrab.grab().crop((x, y, x1, y1)).convert('L')
+        try:
+            x = self.master.winfo_rootx() + self.canvas.winfo_x()
+            y = self.master.winfo_rooty() + self.canvas.winfo_y()
+            x1 = x + self.canvas_width
+            y1 = y + self.canvas_height
+            img = ImageGrab.grab().crop((x, y, x1, y1)).convert('L')
 
-        img = img.resize((IMAGE_SIZE, IMAGE_SIZE))
-        img_array = np.array(img) / 255.0
-        img_array = np.expand_dims(img_array, axis=0)
-        img_array = np.expand_dims(img_array, axis=-1)
+            img = img.resize((IMAGE_SIZE, IMAGE_SIZE))
+            img_array = np.array(img) / 255.0
+            img_array = np.expand_dims(img_array, axis=0)
+            img_array = np.expand_dims(img_array, axis=-1)
 
-        prediction = self.model.predict(img_array)
-        digit = np.argmax(prediction)
+            prediction = self.model.predict(img_array, verbose=0) # verbose=0 чтобы не спамить в консоль
+            digit = np.argmax(prediction)
 
-        self.prediction_label.config(text=f"Предсказание: {digit}")
+            self.prediction_label.config(text=f"Предсказание: {digit}")
+
+        except Exception as e:
+            logging.error(f"Ошибка при предсказании цифры: {e}")
+            messagebox.showerror("Ошибка", f"Не удалось распознать цифру: {e}")
 
     def save_for_training(self):
         """Сохраняет нарисованное изображение для обучения."""
@@ -246,32 +303,68 @@ class DigitRecognizerApp:
             messagebox.showerror("Ошибка", "Пожалуйста, введите цифру от 0 до 9.")
             return
 
-        x = self.master.winfo_rootx() + self.canvas.winfo_x()
-        y = self.master.winfo_rooty() + self.canvas.winfo_y()
-        x1 = x + self.canvas_width
-        y1 = y + self.canvas_height
-        img = ImageGrab.grab().crop((x, y, x1, y1)).convert('L')
+        try:
+            x = self.master.winfo_rootx() + self.canvas.winfo_x()
+            y = self.master.winfo_rooty() + self.canvas.winfo_y()
+            x1 = x + self.canvas_width
+            y1 = y + self.canvas_height
+            img = ImageGrab.grab().crop((x, y, x1, y1)).convert('L')
 
-        save_drawing(img, int(digit))
-        messagebox.showinfo("Сохранено", "Изображение сохранено для обучения.")
+            save_drawing(img, int(digit))
+            messagebox.showinfo("Сохранено", "Изображение сохранено для обучения.")
 
-    def train_model(self):
-        """Обучает модель на собранных данных."""
-        images, labels = load_data()
-        if len(images) == 0:
-            messagebox.showerror("Ошибка", "Нет данных для обучения. Сначала соберите данные.")
+        except Exception as e:
+            logging.error(f"Ошибка при сохранении для обучения: {e}")
+            messagebox.showerror("Ошибка", f"Не удалось сохранить изображение для обучения: {e}")
+
+    def start_training_thread(self):
+        """Запускает обучение модели в отдельном потоке."""
+        if self.is_training:
+            messagebox.showinfo("Внимание", "Обучение уже идет!")
             return
 
-        self.progress.start()
-        self.model = create_model()
+        if self.model is None:
+            messagebox.showerror("Ошибка", "Невозможно начать обучение. Модель не существует.")
+            return
 
-        def update_progress_bar(progress):
-            """Обновляет прогресс-бар по мере обучения"""
-            self.progress["value"] = progress
+        self.is_training = True
+        threading.Thread(target=self.train_model_thread, daemon=True).start()
 
-        train_model(self.model, images, labels, progress_callback=update_progress_bar)
-        self.progress.stop()
-        messagebox.showinfo("Успех", "Модель обучена и сохранена.")
+    def train_model_thread(self):
+        """Обучает модель на собранных данных (выполняется в отдельном потоке)."""
+        try:
+            images, labels = load_data()
+            if len(images) == 0:
+                messagebox.showerror("Ошибка", "Нет данных для обучения. Сначала соберите данные.")
+                return
+
+            # Блокируем кнопку "Обучить модель"
+            self.train_button.config(state="disabled")
+
+            # Функция для обновления прогресс-бара (нужно вызывать через `after`)
+            def update_progress_bar(progress):
+                self.progress["value"] = progress
+                self.master.update_idletasks()  # Обновляем UI
+
+            # Callback, который вызывает обновление прогресс-бара
+            def progress_callback(progress):
+                self.master.after(0, update_progress_bar, progress)  # Вызываем в главном потоке
+
+            # Запускаем обучение
+            train_model(self.model, images, labels, progress_callback=progress_callback)
+
+            # Выводим сообщение об успехе
+            messagebox.showinfo("Успех", "Модель обучена и сохранена.")
+
+        except Exception as e:
+            logging.error(f"Ошибка в потоке обучения: {e}", exc_info=True)
+            messagebox.showerror("Ошибка", f"Произошла ошибка во время обучения: {e}")
+        finally:
+            # Разблокируем кнопку "Обучить модель" и сбрасываем флаг
+            self.train_button.config(state="normal")
+            self.is_training = False
+            self.master.after(0, self.progress.stop) # Останавливаем прогрессбар
+            self.master.after(0, self.progress.config, {"value": 0})  # Сбрасываем значение прогрессбара
 
 
 # ------------------------------
