@@ -1,0 +1,8 @@
+{
+    "clear": "c",
+    "predict": "<Control-p>",
+    "save": "<Control-s>",
+    "load_image": "<Control-o>",
+    "save_training": "s",
+    "train_model": "<Control-m>"
+}
