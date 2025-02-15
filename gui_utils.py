@@ -1,8 +1,8 @@
 
 import tkinter as tk
-from tkinter import messagebox, filedialog, Canvas, StringVar, Entry, simpledialog, Toplevel, Label
-from tkinter.ttk import Button, Label, Progressbar, Frame, LabelFrame, Style
-from PIL import Image, ImageTk, ImageGrab
+from tkinter import messagebox, filedialog, Canvas, StringVar, Entry, simpledialog, Toplevel, Label, ttk
+from tkinter.ttk import Button, Label, Progressbar, Frame, LabelFrame, Style, Notebook
+from PIL import Image, ImageTk, ImageGrab, ImageChops
 import numpy as np
 import os
 import threading
@@ -28,8 +28,13 @@ class DigitRecognizerApp:
         self.batch_size = batch_size
         self.hotkey_config_file = hotkey_config_file
 
-        style = Style()
-        style.theme_use('clam')  # clam - более легкая тема
+        # --- Загрузка настроек ---
+        self.settings = self.load_settings()
+
+        # --- Настройка стиля ---
+        self.style = Style()
+        self.style.theme_use('clam')  # clam - более легкая тема
+        self.configure_styles()
 
         self.model = model_utils.load_model(self.model_file) # Предварительная загрузка модели
         self.prediction_thread = None
@@ -37,81 +42,43 @@ class DigitRecognizerApp:
         # --- Загрузка настроек горячих клавиш из файла ---
         self.hotkey_bindings = self.load_hotkey_config()
 
+        # --- Notebook (вкладки) ---
+        self.notebook = Notebook(master)
+        self.notebook.pack(expand=True, fill="both", pady=10, padx=10)
+
+        # --- Главная вкладка ---
+        self.main_tab = Frame(self.notebook, style='TFrame')
+        self.notebook.add(self.main_tab, text="Главная")
+
+        # --- Вкладка настроек ---
+        self.settings_tab = Frame(self.notebook, style='TFrame')
+        self.notebook.add(self.settings_tab, text="Настройки")
+        self.create_settings_tab(self.settings_tab)
+
         # --- Frames ---
-        canvas_frame = LabelFrame(master, text="Рисование", padding=10)
-        canvas_frame.pack(pady=10, padx=10, fill=tk.X)
-
-        prediction_frame = LabelFrame(master, text="Результат распознавания", padding=10)
-        prediction_frame.pack(pady=10, padx=10, fill=tk.X)
-
-        button_frame = Frame(master, padding=10)
-        button_frame.pack(pady=10, padx=10, fill=tk.X)
-
-        training_frame = LabelFrame(master, text="Обучение модели", padding=10)
-        training_frame.pack(pady=10, padx=10, fill=tk.X)
-
-        thumbnail_frame = LabelFrame(master, text="Сохраненное изображение", padding=10)
-        thumbnail_frame.pack(pady=10, padx=10, fill=tk.X)
+        self.create_frames(self.main_tab)
 
         # --- Canvas ---
-        self.canvas_width = 300
-        self.canvas_height = 300
-        self.canvas = Canvas(canvas_frame, width=self.canvas_width, height=self.canvas_height, bg="white", bd=2,
-                             relief="solid")
-        self.canvas.pack()
+        self.create_canvas(self.canvas_frame)
 
         # --- Prediction Labels ---
-        self.prediction_label = Label(prediction_frame, text="Предсказание: ", font=("Helvetica", 16))
-        self.prediction_label.pack(pady=5)
-
-        self.confidence_label = Label(prediction_frame, text="Уверенность: ", font=("Helvetica", 16))
-        self.confidence_label.pack(pady=5)
+        self.create_prediction_labels(self.prediction_frame)
 
         # --- Buttons ---
-        self.clear_button = Button(button_frame, text="Очистить", command=self.clear_canvas, width=15)
-        self.clear_button.pack(side=tk.LEFT, padx=5)
-        self.clear_button.bind("<Enter>", lambda event: self.show_tooltip(self.clear_button, "Очистить холст"))
-
-        self.predict_button = Button(button_frame, text="Распознать", command=self.async_predict, width=15)
-        self.predict_button.pack(side=tk.LEFT, padx=5)
-        self.predict_button.bind("<Enter>", lambda event: self.show_tooltip(self.predict_button, "Распознать цифру"))
-
-        self.save_png_button = Button(button_frame, text="Сохранить PNG", command=self.save_png, width=15)
-        self.save_png_button.pack(side=tk.LEFT, padx=5)
-        self.save_png_button.bind("<Enter>", lambda event: self.show_tooltip(self.save_png_button, "Сохранить изображение в формате PNG"))
-
-        self.load_image_button = Button(button_frame, text="Загрузить изображение", command=self.load_image, width=20)
-        self.load_image_button.pack(side=tk.LEFT, padx=5)
-        self.load_image_button.bind("<Enter>", lambda event: self.show_tooltip(self.load_image_button, "Загрузить изображение с диска"))
+        self.create_buttons(self.button_frame)
 
         # --- Training Widgets ---
-        self.digit_var = StringVar(value="0")
-        self.digit_entry = Entry(training_frame, textvariable=self.digit_var, width=5, font=("Helvetica", 14))
-        self.digit_entry.pack(side=tk.LEFT, padx=5)
-        self.digit_entry.insert(0, '0')
-        self.digit_entry.bind("<Enter>", lambda event: self.show_tooltip(self.digit_entry, "Введите цифру от 0 до 9"))
+        self.create_training_widgets(self.training_frame)
 
-        self.save_button = Button(training_frame, text="Сохранить для обучения", command=self.save_for_training, width=20)
-        self.save_button.pack(side=tk.LEFT, padx=5)
-        self.save_button.bind("<Enter>", lambda event: self.show_tooltip(self.save_button, "Сохранить нарисованную цифру для обучения модели"))
-
-        self.train_button = Button(training_frame, text="Обучить модель", command=self.train_model_thread, width=20)
-        self.train_button.pack(pady=10, padx=5)
-        self.train_button.bind("<Enter>", lambda event: self.show_tooltip(self.train_button, "Обучить модель на собранных данных"))
-
+        # --- Progress Bar ---
         self.progress = Progressbar(master, length=200, mode="indeterminate")
         self.progress.pack(pady=10)
 
         # --- Thumbnail ---
-        self.thumbnail_label = Label(thumbnail_frame)
-        self.thumbnail_label.pack()
-
-        # --- Hotkey Configuration ---
-        self.hotkey_button = Button(button_frame, text="Настроить горячие клавиши", command=self.configure_hotkeys, width=25)
-        self.hotkey_button.pack(side=tk.LEFT, padx=5)
+        self.create_thumbnail(self.thumbnail_frame)
 
         # --- Help Button ---
-        self.help_button = Button(button_frame, text="Справка", command=self.show_help, width=10)
+        self.help_button = Button(self.button_frame, text="Справка", command=self.show_help, width=10)
         self.help_button.pack(side=tk.LEFT, padx=5)
 
         self.bind_hotkeys()
@@ -119,6 +86,114 @@ class DigitRecognizerApp:
         self.canvas.bind("<B1-Motion>", self.paint)
         self.last_x = None
         self.last_y = None
+
+
+    def configure_styles(self):
+        """Настройка стилей для виджетов."""
+        # Общие стили
+        self.style.configure('TButton', padding=5, font=('Segoe UI', 10), borderwidth=0, relief='flat')
+        self.style.configure('TLabel', padding=5, font=('Segoe UI', 12))
+        self.style.configure('TFrame', background=self.settings.get('background_color', '#ffffff'))  # Белый фон
+        self.style.configure('TLabelframe', borderwidth=0, relief='flat', background=self.settings.get('background_color', '#ffffff'))
+        self.style.configure('TLabelframe.Label', font=('Segoe UI', 12, 'bold'))
+
+        # Стили для акцентных кнопок
+        self.style.configure('Accent.TButton',
+                             background=self.settings.get('accent_color', '#2196F3'),  # Синий
+                             foreground='white')
+        self.style.map('Accent.TButton',
+                       background=[('active', self.settings.get('accent_hover_color', '#1976D2'))],  # Более темный синий при наведении
+                       foreground=[('active', 'white')])
+
+        # Стили для обычных кнопок
+        self.style.configure('Normal.TButton',
+                             background=self.settings.get('normal_color', '#E3F2FD'),  # Светло-синий
+                             foreground='black')
+        self.style.map('Normal.TButton',
+                       background=[('active', self.settings.get('normal_hover_color', '#BBDEFB'))],  # Еще светлее при наведении
+                       foreground=[('active', 'black')])
+
+        # Применение стилей по умолчанию для кнопок
+        self.default_button_style = 'Normal.TButton'
+
+    def create_frames(self, master):
+        """Создание основных фреймов."""
+        self.canvas_frame = LabelFrame(master, text="Рисование", padding=10)
+        self.canvas_frame.pack(pady=10, padx=10, fill=tk.X)
+
+        self.prediction_frame = LabelFrame(master, text="Результат распознавания", padding=10)
+        self.prediction_frame.pack(pady=10, padx=10, fill=tk.X)
+
+        self.button_frame = Frame(master, padding=10)
+        self.button_frame.pack(pady=10, padx=10, fill=tk.X)
+
+        self.training_frame = LabelFrame(master, text="Обучение модели", padding=10)
+        self.training_frame.pack(pady=10, padx=10, fill=tk.X)
+
+        self.thumbnail_frame = LabelFrame(master, text="Сохраненное изображение", padding=10)
+        self.thumbnail_frame.pack(pady=10, padx=10, fill=tk.X)
+
+    def create_canvas(self, parent):
+        """Создание холста для рисования."""
+        self.canvas_width = 300
+        self.canvas_height = 300
+        self.canvas = Canvas(parent, width=self.canvas_width, height=self.canvas_height, bg="white", bd=0,
+                             highlightthickness=0)  # Убрал границы и подсветку
+        self.canvas.pack()
+
+    def create_prediction_labels(self, parent):
+        """Создание меток для отображения результатов предсказания."""
+        self.prediction_label = Label(parent, text="Предсказание: ", font=("Segoe UI", 16))
+        self.prediction_label.pack(pady=5)
+
+        self.confidence_label = Label(parent, text="Уверенность: ", font=("Segoe UI", 16))
+        self.confidence_label.pack(pady=5)
+
+        self.time_label = Label(parent, text="Время распознавания: ", font=("Segoe UI", 12))  # Добавил метку для времени
+        self.time_label.pack(pady=5)
+
+    def create_buttons(self, parent):
+        """Создание кнопок управления."""
+        self.clear_button = Button(parent, text="Очистить", command=self.clear_canvas, width=15, style=self.default_button_style)
+        self.clear_button.pack(side=tk.LEFT, padx=5)
+        self.clear_button.bind("<Enter>", lambda event: self.show_tooltip(self.clear_button, "Очистить холст"))
+
+        self.predict_button = Button(parent, text="Распознать", command=self.async_predict, width=15, style='Accent.TButton')
+        self.predict_button.pack(side=tk.LEFT, padx=5)
+        self.predict_button.bind("<Enter>", lambda event: self.show_tooltip(self.predict_button, "Распознать цифру"))
+
+        self.save_png_button = Button(parent, text="Сохранить PNG", command=self.save_png, width=15, style=self.default_button_style)
+        self.save_png_button.pack(side=tk.LEFT, padx=5)
+        self.save_png_button.bind("<Enter>", lambda event: self.show_tooltip(self.save_png_button, "Сохранить изображение в формате PNG"))
+
+        self.load_image_button = Button(parent, text="Загрузить изображение", command=self.load_image, width=20, style=self.default_button_style)
+        self.load_image_button.pack(side=tk.LEFT, padx=5)
+        self.load_image_button.bind("<Enter>", lambda event: self.show_tooltip(self.load_image_button, "Загрузить изображение с диска"))
+
+        # --- Hotkey Configuration ---
+        self.hotkey_button = Button(parent, text="Настроить горячие клавиши", command=self.configure_hotkeys, width=25, style=self.default_button_style)
+        self.hotkey_button.pack(side=tk.LEFT, padx=5)
+
+    def create_training_widgets(self, parent):
+        """Создание виджетов для обучения модели."""
+        self.digit_var = StringVar(value="0")
+        self.digit_entry = Entry(parent, textvariable=self.digit_var, width=5, font=("Segoe UI", 14))
+        self.digit_entry.pack(side=tk.LEFT, padx=5)
+        self.digit_entry.insert(0, '0')
+        self.digit_entry.bind("<Enter>", lambda event: self.show_tooltip(self.digit_entry, "Введите цифру от 0 до 9"))
+
+        self.save_button = Button(parent, text="Сохранить для обучения", command=self.save_for_training, width=20, style=self.default_button_style)
+        self.save_button.pack(side=tk.LEFT, padx=5)
+        self.save_button.bind("<Enter>", lambda event: self.show_tooltip(self.save_button, "Сохранить нарисованную цифру для обучения модели"))
+
+        self.train_button = Button(parent, text="Обучить модель", command=self.train_model_thread, width=20, style='Accent.TButton')
+        self.train_button.pack(pady=10, padx=5)
+        self.train_button.bind("<Enter>", lambda event: self.show_tooltip(self.train_button, "Обучить модель на собранных данных"))
+
+    def create_thumbnail(self, parent):
+        """Создание места для отображения миниатюры сохраненного изображения."""
+        self.thumbnail_label = Label(parent)
+        self.thumbnail_label.pack()
 
     def load_hotkey_config(self):
         """Загружает настройки горячих клавиш из файла."""
@@ -189,7 +264,7 @@ class DigitRecognizerApp:
         print("Горячие клавиши привязаны.")  # Debug-вывод
 
     def configure_hotkeys(self):
-        config_window = tk.Toplevel(self.master)
+        config_window = Toplevel(self.master)
         config_window.title("Настройка горячих клавиш")
 
         def update_hotkey(action, new_key):
@@ -234,6 +309,90 @@ class DigitRecognizerApp:
         if new_key is not None:  # Проверяем, что пользователь не нажал "Отмена"
             update_hotkey(action, new_key)
 
+    def create_settings_tab(self, parent):
+        """Создает вкладку настроек."""
+        # --- Фон ---
+        bg_label = Label(parent, text="Цвет фона:", font=("Segoe UI", 10))
+        bg_label.grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        self.bg_entry = Entry(parent, width=10)
+        self.bg_entry.insert(0, self.settings.get('background_color', '#ffffff'))
+        self.bg_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+
+        # --- Акцентный цвет ---
+        accent_label = Label(parent, text="Цвет акцента:", font=("Segoe UI", 10))
+        accent_label.grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        self.accent_entry = Entry(parent, width=10)
+        self.accent_entry.insert(0, self.settings.get('accent_color', '#2196F3'))
+        self.accent_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+
+        # --- Цвет при наведении на акцент ---
+        accent_hover_label = Label(parent, text="Цвет при наведении (акцент):", font=("Segoe UI", 10))
+        accent_hover_label.grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+        self.accent_hover_entry = Entry(parent, width=10)
+        self.accent_hover_entry.insert(0, self.settings.get('accent_hover_color', '#1976D2'))
+        self.accent_hover_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
+
+        # --- Нормальный цвет кнопки ---
+        normal_label = Label(parent, text="Цвет кнопки:", font=("Segoe UI", 10))
+        normal_label.grid(row=3, column=0, padx=5, pady=5, sticky=tk.W)
+        self.normal_entry = Entry(parent, width=10)
+        self.normal_entry.insert(0, self.settings.get('normal_color', '#E3F2FD'))
+        self.normal_entry.grid(row=3, column=1, padx=5, pady=5, sticky=tk.W)
+
+        # --- Цвет при наведении на обычную кнопку ---
+        normal_hover_label = Label(parent, text="Цвет при наведении (кнопка):", font=("Segoe UI", 10))
+        normal_hover_label.grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
+        self.normal_hover_entry = Entry(parent, width=10)
+        self.normal_hover_entry.insert(0, self.settings.get('normal_hover_color', '#BBDEFB'))
+        self.normal_hover_entry.grid(row=4, column=1, padx=5, pady=5, sticky=tk.W)
+
+        # --- Кнопка сохранения ---
+        save_button = Button(parent, text="Сохранить настройки", command=self.save_settings_from_tab)
+        save_button.grid(row=5, column=0, columnspan=2, padx=5, pady=10)
+
+
+    def save_settings_from_tab(self):
+        """Сохраняет настройки из полей ввода на вкладке настроек."""
+        self.settings['background_color'] = self.bg_entry.get()
+        self.settings['accent_color'] = self.accent_entry.get()
+        self.settings['accent_hover_color'] = self.accent_hover_entry.get()
+        self.settings['normal_color'] = self.normal_entry.get()
+        self.settings['normal_hover_color'] = self.normal_hover_entry.get()
+        self.save_settings()
+        self.configure_styles()  # Обновляем стили после сохранения
+
+    def load_settings(self):
+        """Загружает настройки из файла."""
+        try:
+            with open("settings.json", "r") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {
+                'background_color': '#ffffff',
+                'accent_color': '#2196F3',
+                'accent_hover_color': '#1976D2',
+                'normal_color': '#E3F2FD',
+                'normal_hover_color': '#BBDEFB'
+            }
+        except json.JSONDecodeError:
+            print("Ошибка при чтении файла настроек. Используются настройки по умолчанию.")
+            return {
+                'background_color': '#ffffff',
+                'accent_color': '#2196F3',
+                'accent_hover_color': '#1976D2',
+                'normal_color': '#E3F2FD',
+                'normal_hover_color': '#BBDEFB'
+            }
+
+    def save_settings(self):
+        """Сохраняет настройки в файл."""
+        try:
+            with open("settings.json", "w") as f:
+                json.dump(self.settings, f, indent=4)
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось сохранить настройки: {e}")
+
+
     def show_help(self):
         """
         Открывает окно справки с информацией о приложении.
@@ -253,6 +412,7 @@ class DigitRecognizerApp:
         - **Холст:** Область для рисования цифр.
         - **Метка "Предсказание":** Отображает предсказанную цифру.
         - **Метка "Уверенность":** Отображает уверенность модели в предсказании в процентах.
+        - **Метка "Время распознавания":** Отображает время, затраченное на распознавание цифры.
         - **Превью сохраненного изображения:** Отображает уменьшенную копию последнего сохраненного изображения для обучения.
 
         **Кнопки управления:**
@@ -272,6 +432,9 @@ class DigitRecognizerApp:
         4. Повторите шаги 1-3, чтобы собрать достаточное количество данных для каждой цифры (рекомендуется не менее 50 изображений каждой цифры).
         5. Нажмите кнопку "Обучить модель".  Начнется процесс обучения модели на собранных данных.  Индикатор прогресса покажет ход обучения.  *Во время обучения интерфейс может быть временно заблокирован*. Горячая клавиша: {train_model}
 
+        **Настройка интерфейса:**
+        Во вкладке "Настройки" вы можете изменить цвета фона, акцентных элементов и обычных кнопок.  Изменения будут применены после нажатия кнопки "Сохранить настройки".
+
         **Важно:**
         - Перед обучением модели убедитесь, что в папке 'data' есть достаточное количество изображений для каждой цифры.
         - Чем больше данных, тем лучше будет работать модель.
@@ -287,10 +450,6 @@ class DigitRecognizerApp:
         4. В появившемся диалоговом окне введите новое сочетание клавиш (например, "<Control-Shift-A>").
         5. Нажмите "OK".
         6. Новая горячая клавиша будет применена немедленно.
-
-        **Примечание:**
-        - Горячие клавиши сохраняются в файле 'hotkeys.json' и будут автоматически загружены при следующем запуске приложения.
-        - Если файл 'hotkeys.json' не найден или поврежден, будут использованы настройки по умолчанию.
         """
 
         help_text = help_text.format(
@@ -321,7 +480,7 @@ class DigitRecognizerApp:
             self.tooltip.withdraw()
             self.tooltip.overrideredirect(True)
             self.tooltip_label = Label(self.tooltip, text=text, background="#ffffe0", relief="solid", borderwidth=1,
-                                       font=("Helvetica", 9))
+                                       font=("Segoe UI", 9))
             self.tooltip_label.pack()
             x, y, _, _ = widget.bbox("insert")
             x += widget.winfo_rootx() + 25
@@ -349,6 +508,7 @@ class DigitRecognizerApp:
         self.last_y = None
         self.prediction_label.config(text="Предсказание: ")
         self.confidence_label.config(text="Уверенность: ")
+        self.time_label.config(text="Время распознавания: ")
         self.thumbnail_label.config(image=None)
         self.thumbnail_label.image = None
 
@@ -392,10 +552,40 @@ class DigitRecognizerApp:
         y = self.canvas.winfo_rooty()
         x1 = x + self.canvas_width
         y1 = y + self.canvas_height
-        try:
-            img = ImageGrab.grab().crop((x, y, x1, y1)).convert('L')
 
-            img = img.resize((self.image_size, self.image_size))
+        try:
+            # Захватываем изображение с холста
+            img = ImageGrab.grab().crop((x, y, x1, y1))
+
+            # Удаляем белые края
+            bg = Image.new(img.mode, img.size, "WHITE")
+            diff = ImageChops.difference(img, bg)
+            bbox = diff.getbbox()
+            if bbox:
+                img = img.crop(bbox)
+
+            # Добавляем белую рамку, если изображение стало слишком маленьким
+            width, height = img.size
+            max_size = max(width, height)
+            desired_size = 250  # Желаемый размер изображения
+            if max_size < desired_size:
+                padding = (desired_size - max_size) // 2
+                new_width = width + 2 * padding
+                new_height = height + 2 * padding
+                new_img = Image.new(img.mode, (new_width, new_height), "WHITE")
+                new_img.paste(img, (padding, padding))
+                img = new_img
+            else:
+                padding = 15
+                new_width = width + 2 * padding
+                new_height = height + 2 * padding
+                new_img = Image.new(img.mode, (new_width, new_height), "WHITE")
+                new_img.paste(img, (padding, padding))
+                img = new_img
+
+
+            img = img.resize((self.image_size, self.image_size)).convert('L')
+
             img_array = np.array(img) / 255.0
             img_array = np.expand_dims(img_array, axis=0)
             img_array = np.expand_dims(img_array, axis=-1)
@@ -403,12 +593,12 @@ class DigitRecognizerApp:
             start_time = time.time()
             prediction = self.model.predict(img_array)
             end_time = time.time()
-            print(f"Prediction time: {end_time - start_time:.4f} seconds")
+            prediction_time = end_time - start_time
 
             digit = np.argmax(prediction)
             confidence = prediction[0][digit] * 100
 
-            self.update_gui_after("Предсказание", f"Предсказание: {digit}, Уверенность: {confidence:.2f}%")
+            self.update_gui_after("Предсказание", f"Предсказание: {digit}, Уверенность: {confidence:.2f}%, Время: {prediction_time:.4f} сек")
 
         except Exception as e:
             self.update_gui_after("Ошибка", f"Ошибка во время распознавания: {e}")
@@ -423,8 +613,10 @@ class DigitRecognizerApp:
         if title == "Ошибка":
             messagebox.showerror(title, message)
         elif title == "Предсказание":
-            self.update_label(self.prediction_label, message.split(',')[0])
-            self.update_label(self.confidence_label, message.split(',')[1])
+            parts = message.split(',')
+            self.update_label(self.prediction_label, parts[0])
+            self.update_label(self.confidence_label, parts[1])
+            self.update_label(self.time_label, parts[2])
 
     def save_for_training(self):
         digit = self.digit_var.get()
@@ -453,7 +645,7 @@ class DigitRecognizerApp:
 
     def save_png(self):
         file_path = filedialog.asksaveasfilename(defaultextension=".png",
-                                               filetypes=[("PNG files", "*.png")])
+                                                 filetypes=[("PNG files", "*.png")])
         if file_path:
             x = self.master.winfo_rootx() + self.canvas.winfo_x()
             y = self.master.winfo_rooty() + self.canvas.winfo_y()
@@ -472,7 +664,8 @@ class DigitRecognizerApp:
 
         images, labels = data_utils.load_data(self.data_dir, self.image_size, self.num_classes)
         if not images.size or not labels.size:
-            messagebox.showerror("Ошибка", "Недостаточно данных для обучения.  Пожалуйста, соберите данные, сохраняя рисунки для обучения.")
+            messagebox.showerror("Ошибка",
+                                 "Недостаточно данных для обучения.  Пожалуйста, соберите данные, сохраняя рисунки для обучения.")
             return
 
         self.progress.start()
@@ -484,7 +677,7 @@ class DigitRecognizerApp:
             self.master.after(0, lambda: self.progress.config(value=progress))
 
         history = model_utils.train_model(self.model, images, labels, self.image_size, self.num_classes,
-                                            self.learning_rate, self.epochs, self.batch_size, progress_callback)
+                                          self.learning_rate, self.epochs, self.batch_size, progress_callback)
 
         self.master.after(0, self.training_complete)
 
@@ -493,3 +686,10 @@ class DigitRecognizerApp:
         self.progress.config(value=0)
         messagebox.showinfo("Обучение завершено", "Обучение модели завершено.")
         self.model = model_utils.load_model(self.model_file)  # Перезагрузка модели после обучения
+
+try:
+    from PIL import ImageChops
+except ImportError:
+    print("Пожалуйста, установите библиотеку Pillow: pip install Pillow")
+    import sys
+    sys.exit(1)

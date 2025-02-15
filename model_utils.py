@@ -5,6 +5,10 @@ from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 import numpy as np
+import logging
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def create_model(image_size, num_classes):
     """
@@ -61,7 +65,7 @@ def train_model(model, images, labels, image_size, num_classes, learning_rate, e
         return history
 
     except Exception as e:
-        print(f"Ошибка во время обучения модели: {e}")
+        logging.error(f"Ошибка во время обучения модели: {e}")
         return None
 
 def save_model(model, filename):
@@ -70,9 +74,9 @@ def save_model(model, filename):
     """
     try:
         model.save(filename)
-        print(f"Модель сохранена в {filename}")
+        logging.info(f"Модель сохранена в {filename}")
     except Exception as e:
-        print(f"Ошибка при сохранении модели: {e}")
+        logging.error(f"Ошибка при сохранении модели: {e}")
 
 def load_model(filename):
     """
@@ -80,11 +84,10 @@ def load_model(filename):
     """
     try:
         model = tf.keras.models.load_model(filename)
-        print(f"Модель загружена из {filename}")
+        logging.info(f"Модель загружена из {filename}")
         return model
     except FileNotFoundError:
-        print("Файл модели не найден. Пожалуйста, обучите модель сначала.")
+        logging.warning("Файл модели не найден. Пожалуйста, обучите модель сначала.")
         return None
     except Exception as e:
-        print(f"Ошибка при загрузке модели: {e}")
-        return None
+        logging.error(f"Ошибка при загрузке модели: {e}")
